@@ -156,24 +156,28 @@ void MaglevAssembler::StoreTaggedFieldWithWriteBarrier(
   bind(*done);
 }
 
-void MaglevAssembler::ToBoolean(Register value, ZoneLabelRef is_true,
-                                ZoneLabelRef is_false,
+void MaglevAssembler::ToBoolean(Register value, CheckType check_type,
+                                ZoneLabelRef is_true, ZoneLabelRef is_false,
                                 bool fallthrough_when_true) {
   ScratchRegisterScope temps(this);
   Register map = temps.Acquire();
 
-  // Check if {{value}} is Smi.
-  Condition is_smi = CheckSmi(value);
-  JumpToDeferredIf(
-      is_smi,
-      [](MaglevAssembler* masm, Register value, ZoneLabelRef is_true,
-         ZoneLabelRef is_false) {
-        // Check if {value} is not zero.
-        __ CmpTagged(value, Smi::FromInt(0));
-        __ JumpIf(eq, *is_false);
-        __ Jump(*is_true);
-      },
-      value, is_true, is_false);
+  if (check_type == CheckType::kCheckHeapObject) {
+    // Check if {{value}} is Smi.
+    Condition is_smi = CheckSmi(value);
+    JumpToDeferredIf(
+        is_smi,
+        [](MaglevAssembler* masm, Register value, ZoneLabelRef is_true,
+           ZoneLabelRef is_false) {
+          // Check if {value} is not zero.
+          __ CmpTagged(value, Smi::FromInt(0));
+          __ JumpIf(eq, *is_false);
+          __ Jump(*is_true);
+        },
+        value, is_true, is_false);
+  } else if (v8_flags.debug_code) {
+    AssertNotSmi(value);
+  }
 
   // Check if {{value}} is false.
   CompareRoot(value, RootIndex::kFalseValue);
@@ -374,7 +378,7 @@ void MaglevAssembler::Prologue(Graph* graph) {
 
   // Tiering support.
   // TODO(jgruber): Extract to a builtin.
-  {
+  if (v8_flags.turbofan) {
     ScratchRegisterScope temps(this);
     Register flags = temps.Acquire();
     Register feedback_vector = temps.Acquire();
@@ -814,6 +818,18 @@ void MaglevAssembler::StringLength(Register result, Register string) {
     Check(ls, AbortReason::kUnexpectedValue);
   }
   Ldr(result.W(), FieldMemOperand(string, String::kLengthOffset));
+}
+
+void MaglevAssembler::FunctionLength(Register result, Register function) {
+  AssertFunction(function);
+  MaglevAssembler::ScratchRegisterScope temps(this);
+  Register scratch = temps.Acquire();
+  LoadTaggedField(
+      scratch,
+      FieldMemOperand(function, JSFunction::kSharedFunctionInfoOffset));
+  LoadUnsignedField(result.W(),
+                    FieldMemOperand(scratch, SharedFunctionInfo::kLengthOffset),
+                    2);
 }
 
 void MaglevAssembler::StoreFixedArrayElementWithWriteBarrier(
